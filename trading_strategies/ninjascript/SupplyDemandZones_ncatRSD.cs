@@ -178,58 +178,72 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         private void ScanForZones()
         {
-            // Scan all drawing objects on the chart for ncatRSD zones
-            if (DrawObjects == null)
-                return;
-
-            foreach (var drawObject in DrawObjects)
+            // Try to access chart-level drawings (from all indicators including ncatRSD)
+            if (ChartControl == null)
             {
-                if (drawObject == null)
-                    continue;
+                Print($"{Time[0]} | ChartControl null - running in backtest without chart");
+                return;
+            }
 
-                // Check if it's a rectangle (zones are rectangles)
-                if (drawObject is DrawingTools.Rectangle rect)
+            try
+            {
+                // Access all drawing objects on the chart via ChartObjects
+                var chartObjects = ChartControl.ChartObjects;
+                if (chartObjects == null)
+                    return;
+
+                foreach (var chartObject in chartObjects)
                 {
-                    string tag = rect.Tag;
-
-                    if (string.IsNullOrEmpty(tag))
+                    if (chartObject == null)
                         continue;
 
-                    // Demand zones from ncatRSD
-                    if (tag.StartsWith("dnzone_"))
+                    // Check if it's a Rectangle
+                    if (chartObject is DrawingTools.Rectangle rect)
                     {
-                        if (!demandZones.Any(z => z.Tag == tag))
+                        string tag = rect.Tag;
+                        if (string.IsNullOrEmpty(tag))
+                            continue;
+
+                        // Demand zones from ncatRSD: dnzone_*
+                        if (tag.StartsWith("dnzone_"))
                         {
-                            var zone = new ZoneInfo
+                            if (!demandZones.Any(z => z.Tag == tag))
                             {
-                                Tag = tag,
-                                High = Math.Max(rect.StartAnchor.Price, rect.EndAnchor.Price),
-                                Low = Math.Min(rect.StartAnchor.Price, rect.EndAnchor.Price),
-                                StartTime = rect.StartAnchor.Time,
-                                IsValid = true
-                            };
-                            demandZones.Add(zone);
-                            Print($"{Time[0]} | DEMAND ZONE found: {zone.Low:F2} - {zone.High:F2} ({tag})");
+                                var zone = new ZoneInfo
+                                {
+                                    Tag = tag,
+                                    High = Math.Max(rect.StartAnchor.Price, rect.EndAnchor.Price),
+                                    Low = Math.Min(rect.StartAnchor.Price, rect.EndAnchor.Price),
+                                    StartTime = rect.StartAnchor.Time,
+                                    IsValid = true
+                                };
+                                demandZones.Add(zone);
+                                Print($"{Time[0]} | DEMAND ZONE found: {zone.Low:F2} - {zone.High:F2} ({tag})");
+                            }
                         }
-                    }
-                    // Supply zones from ncatRSD
-                    else if (tag.StartsWith("upzone_"))
-                    {
-                        if (!supplyZones.Any(z => z.Tag == tag))
+                        // Supply zones from ncatRSD: upzone_*
+                        else if (tag.StartsWith("upzone_"))
                         {
-                            var zone = new ZoneInfo
+                            if (!supplyZones.Any(z => z.Tag == tag))
                             {
-                                Tag = tag,
-                                High = Math.Max(rect.StartAnchor.Price, rect.EndAnchor.Price),
-                                Low = Math.Min(rect.StartAnchor.Price, rect.EndAnchor.Price),
-                                StartTime = rect.StartAnchor.Time,
-                                IsValid = true
-                            };
-                            supplyZones.Add(zone);
-                            Print($"{Time[0]} | SUPPLY ZONE found: {zone.Low:F2} - {zone.High:F2} ({tag})");
+                                var zone = new ZoneInfo
+                                {
+                                    Tag = tag,
+                                    High = Math.Max(rect.StartAnchor.Price, rect.EndAnchor.Price),
+                                    Low = Math.Min(rect.StartAnchor.Price, rect.EndAnchor.Price),
+                                    StartTime = rect.StartAnchor.Time,
+                                    IsValid = true
+                                };
+                                supplyZones.Add(zone);
+                                Print($"{Time[0]} | SUPPLY ZONE found: {zone.Low:F2} - {zone.High:F2} ({tag})");
+                            }
                         }
                     }
                 }
+            }
+            catch (Exception ex)
+            {
+                Print($"{Time[0]} | Error scanning zones: {ex.Message}");
             }
         }
 
