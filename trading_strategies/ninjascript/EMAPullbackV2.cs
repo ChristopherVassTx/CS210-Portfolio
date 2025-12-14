@@ -74,6 +74,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 PullbackToEMAPercent = 0.3; // Price within 0.3% of slow EMA counts as pullback
 
                 // Risk Management - adjusted for MNQ
+                Contracts = 1;              // Number of contracts to trade
                 StopLossTicks = 40;         // ~10 points on MNQ
                 TakeProfitTicks = 60;       // ~15 points on MNQ
                 MaxTradesPerDay = 5;        // Allow more trades on trend days
@@ -177,7 +178,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (rejection || continuation || failedBreakout)
                 {
-                    EnterShort("PBShort");
+                    EnterShort(Contracts, "PBShort");
                     tradesToday++;
 
                     string reason = rejection ? "EMA Rejection" : (continuation ? "Continuation" : "Failed Breakout");
@@ -205,7 +206,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 if (bounce || continuation || failedBreakdown)
                 {
-                    EnterLong("PBLong");
+                    EnterLong(Contracts, "PBLong");
                     tradesToday++;
 
                     string reason = bounce ? "EMA Bounce" : (continuation ? "Continuation" : "Failed Breakdown");
@@ -256,6 +257,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(0.1, 1.0)]
         [Display(Name = "Pullback to EMA %", Description = "How close price must get to slow EMA", Order = 2, GroupName = "2. Pullback Detection")]
         public double PullbackToEMAPercent { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 100)]
+        [Display(Name = "Contracts", Description = "Number of contracts to trade", Order = 0, GroupName = "3. Risk Management")]
+        public int Contracts { get; set; }
 
         [NinjaScriptProperty]
         [Range(10, 200)]
