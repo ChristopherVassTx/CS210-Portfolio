@@ -222,7 +222,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     demandZoneTouches = 0;
                     demandZoneValid = true;
 
-                    Draw.Rectangle(this, "DemandZone" + CurrentBars[1], false, consolidationBar, demandZoneLow, -50, demandZoneHigh, Brushes.Green, Brushes.Green, 20);
+                    Draw.Rectangle(this, "DemandZone" + CurrentBars[1], false, consolidationBar, demandZoneLow, -500, demandZoneHigh, Brushes.Green, Brushes.Green, 25);
                     Print($"{Times[1][0]} | DEMAND ZONE created: {demandZoneLow:F2} - {demandZoneHigh:F2} (bar -{consolidationBar})");
                 }
             }
@@ -240,7 +240,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     supplyZoneTouches = 0;
                     supplyZoneValid = true;
 
-                    Draw.Rectangle(this, "SupplyZone" + CurrentBars[1], false, consolidationBar, supplyZoneLow, -50, supplyZoneHigh, Brushes.Red, Brushes.Red, 20);
+                    Draw.Rectangle(this, "SupplyZone" + CurrentBars[1], false, consolidationBar, supplyZoneLow, -500, supplyZoneHigh, Brushes.Red, Brushes.Red, 25);
                     Print($"{Times[1][0]} | SUPPLY ZONE created: {supplyZoneLow:F2} - {supplyZoneHigh:F2} (bar -{consolidationBar})");
                 }
             }
