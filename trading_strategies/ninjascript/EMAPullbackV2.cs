@@ -35,6 +35,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private EMA emaFast;
         private EMA emaSlow;
         private EMA emaTrend;
+        private ADX adx;
         private int tradesToday = 0;
         private DateTime lastTradeDate = DateTime.MinValue;
         private int barsInPullback = 0;
@@ -69,6 +70,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 SlowEMAPeriod = 21;
                 TrendEMAPeriod = 50;
 
+                // Trend Filter - ADX
+                ADXPeriod = 14;
+                ADXThreshold = 25;          // Only trade when ADX > 25 (confirms real trend)
+
                 // RELAXED pullback settings
                 PullbackBars = 5;           // Look for pullback within last 5 bars
                 PullbackToEMAPercent = 0.3; // Price within 0.3% of slow EMA counts as pullback
@@ -99,10 +104,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 emaFast = EMA(Close, FastEMAPeriod);
                 emaSlow = EMA(Close, SlowEMAPeriod);
                 emaTrend = EMA(Close, TrendEMAPeriod);
+                adx = ADX(Close, ADXPeriod);
 
                 AddChartIndicator(emaFast);
                 AddChartIndicator(emaSlow);
                 AddChartIndicator(emaTrend);
+                AddChartIndicator(adx);
 
                 emaFast.Plots[0].Brush = Brushes.DodgerBlue;
                 emaSlow.Plots[0].Brush = Brushes.Orange;
@@ -133,6 +140,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Skip if no clear trend
             if (!strongDowntrend && !strongUptrend)
+                return;
+
+            // ADX FILTER - Skip if market is choppy (ADX below threshold)
+            if (adx[0] < ADXThreshold)
                 return;
 
             // Calculate how close price is to the slow EMA (our pullback target)
@@ -247,6 +258,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(30, 200)]
         [Display(Name = "Trend EMA Period", Order = 3, GroupName = "1. EMAs")]
         public int TrendEMAPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(7, 30)]
+        [Display(Name = "ADX Period", Order = 4, GroupName = "1. EMAs")]
+        public int ADXPeriod { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(15, 40)]
+        [Display(Name = "ADX Threshold", Description = "Minimum ADX to confirm trend (25 = standard)", Order = 5, GroupName = "1. EMAs")]
+        public int ADXThreshold { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 10)]
