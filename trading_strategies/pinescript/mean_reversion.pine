@@ -1,0 +1,125 @@
+// Mean Reversion Scalper Strategy for TradingView
+// Optimized for prop firm consistency - High Win Rate
+//
+// HOW TO USE:
+// 1. Copy this code into TradingView Pine Editor
+// 2. Add to your chart (works best on 5-15 min timeframes)
+// 3. Configure alerts for entry signals
+// 4. Connect alerts to your broker via webhooks
+
+//@version=5
+strategy("Mean Reversion Scalper [Prop Firm]",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=2.5)
+
+// ==================== INPUTS ====================
+// Strategy Parameters
+emaPeriod = input.int(20, "EMA Period", minval=5, maxval=50)
+stdPeriod = input.int(20, "StdDev Period", minval=5, maxval=50)
+entryStd = input.float(2.0, "Entry StdDev", minval=1.0, maxval=3.0, step=0.1)
+rsiPeriod = input.int(14, "RSI Period", minval=5, maxval=30)
+rsiOversold = input.int(35, "RSI Oversold", minval=20, maxval=40)
+rsiOverbought = input.int(65, "RSI Overbought", minval=60, maxval=80)
+
+// Risk Management
+stopLossPct = input.float(0.25, "Stop Loss %", minval=0.1, maxval=1.0, step=0.05)
+takeProfitPct = input.float(0.35, "Take Profit %", minval=0.1, maxval=1.0, step=0.05)
+maxTradesPerDay = input.int(5, "Max Trades Per Day", minval=1, maxval=10)
+
+// Session
+tradingSession = input.session("0945-1530", "Trading Session")
+
+// ==================== CALCULATIONS ====================
+// EMA and Bands
+ema = ta.ema(close, emaPeriod)
+stdDev = ta.stdev(close, stdPeriod)
+upperBand = ema + (stdDev * entryStd)
+lowerBand = ema - (stdDev * entryStd)
+
+// RSI
+rsi = ta.rsi(close, rsiPeriod)
+
+// Volume filter
+volumeMA = ta.sma(volume, 20)
+volumeOk = volume > volumeMA * 0.8
+
+// Track trades per day
+newDay = ta.change(time("D")) != 0
+var int tradesToday = 0
+if newDay
+    tradesToday := 0
+
+// ==================== SIGNALS ====================
+inSession = not na(time(timeframe.period, tradingSession))
+canTrade = inSession and tradesToday < maxTradesPerDay and strategy.position_size == 0
+
+// Price crossing below lower band (oversold)
+crossedBelowLower = ta.crossunder(close, lowerBand)
+// Price crossing above upper band (overbought)
+crossedAboveUpper = ta.crossover(close, upperBand)
+
+// Long: Price oversold + RSI confirms
+longCondition = canTrade and crossedBelowLower and rsi < rsiOversold and volumeOk
+
+// Short: Price overbought + RSI confirms
+shortCondition = canTrade and crossedAboveUpper and rsi > rsiOverbought and volumeOk
+
+// ==================== EXECUTION ====================
+if longCondition
+    stopLoss = close * (1 - stopLossPct / 100)
+    takeProfit = close * (1 + takeProfitPct / 100)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=stopLoss, limit=takeProfit)
+    tradesToday += 1
+
+if shortCondition
+    stopLoss = close * (1 + stopLossPct / 100)
+    takeProfit = close * (1 - takeProfitPct / 100)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=stopLoss, limit=takeProfit)
+    tradesToday += 1
+
+// Close at end of session
+if hour == 15 and minute >= 30 and strategy.position_size != 0
+    strategy.close_all("EOD")
+
+// ==================== PLOTTING ====================
+// EMA
+plot(ema, "EMA", color=color.yellow, linewidth=2)
+
+// Bands
+plot(upperBand, "Upper Band", color=color.red, linewidth=1)
+plot(lowerBand, "Lower Band", color=color.green, linewidth=1)
+
+// Fill between bands
+fill(plot(upperBand), plot(lowerBand), color=color.new(color.gray, 90))
+
+// Signal markers
+plotshape(longCondition, "Long Signal", shape.triangleup, location.belowbar, color.green, size=size.small)
+plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar, color.red, size=size.small)
+
+// RSI Panel
+// Uncomment if you want RSI shown in a separate panel
+// plot(rsi, "RSI", color=color.purple)
+// hline(rsiOversold, "Oversold", color=color.green)
+// hline(rsiOverbought, "Overbought", color=color.red)
+
+// ==================== INFO TABLE ====================
+var table infoTable = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 80))
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Trades Today", text_color=color.white)
+    table.cell(infoTable, 1, 0, str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay), text_color=color.yellow)
+    table.cell(infoTable, 0, 1, "RSI", text_color=color.white)
+    table.cell(infoTable, 1, 1, str.tostring(math.round(rsi, 1)), text_color=rsi < rsiOversold ? color.green : rsi > rsiOverbought ? color.red : color.white)
+    table.cell(infoTable, 0, 2, "Distance to EMA", text_color=color.white)
+    distPct = (close - ema) / ema * 100
+    table.cell(infoTable, 1, 2, str.tostring(math.round(distPct, 2)) + "%", text_color=color.white)
+
+// ==================== ALERTS ====================
+alertcondition(longCondition, "Long Signal", "Mean Reversion: LONG entry - Oversold bounce")
+alertcondition(shortCondition, "Short Signal", "Mean Reversion: SHORT entry - Overbought rejection")

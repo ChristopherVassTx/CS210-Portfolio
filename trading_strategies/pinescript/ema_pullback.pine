@@ -1,0 +1,162 @@
+// EMA Pullback Strategy for TradingView
+// Optimized for prop firm consistency - Trend Following
+//
+// HOW TO USE:
+// 1. Copy this code into TradingView Pine Editor
+// 2. Add to your chart (works best on 5-15 min timeframes)
+// 3. Configure alerts for entry signals
+// 4. Connect alerts to your broker via webhooks
+
+//@version=5
+strategy("EMA Pullback [Prop Firm]",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=2.5)
+
+// ==================== INPUTS ====================
+// EMA Settings
+fastEMA = input.int(9, "Fast EMA", minval=3, maxval=20)
+slowEMA = input.int(21, "Slow EMA", minval=10, maxval=50)
+trendEMA = input.int(50, "Trend EMA", minval=30, maxval=200)
+
+// Pullback Settings
+pullbackThreshold = input.float(0.1, "Pullback Threshold %", minval=0.05, maxval=0.5, step=0.05)
+minTrendStrength = input.float(0.15, "Min Trend Strength %", minval=0.05, maxval=0.5, step=0.05)
+
+// Risk Management
+stopLossPct = input.float(0.35, "Stop Loss %", minval=0.1, maxval=1.0, step=0.05)
+takeProfitPct = input.float(0.5, "Take Profit %", minval=0.1, maxval=2.0, step=0.05)
+maxTradesPerDay = input.int(3, "Max Trades Per Day", minval=1, maxval=5)
+
+// Session
+tradingSession = input.session("0945-1515", "Trading Session")
+
+// ==================== CALCULATIONS ====================
+// EMAs
+emaFast = ta.ema(close, fastEMA)
+emaSlow = ta.ema(close, slowEMA)
+emaTrend = ta.ema(close, trendEMA)
+
+// Trend Detection
+uptrend = emaFast > emaSlow and emaSlow > emaTrend
+downtrend = emaFast < emaSlow and emaSlow < emaTrend
+
+// Trend Strength (EMA separation)
+emaSeparation = math.abs(emaFast - emaSlow) / emaSlow * 100
+strongTrend = emaSeparation >= minTrendStrength
+
+// Distance from fast EMA
+distanceFromEMA = math.abs(close - emaFast) / emaFast * 100
+
+// Pullback Detection
+priceNearEMA = distanceFromEMA <= pullbackThreshold
+priceTouchedEMA = ta.cross(close, emaFast)
+
+// Track pullback state
+var bool inUptrendPullback = false
+var bool inDowntrendPullback = false
+
+// Uptrend pullback: price was above EMA, now touching
+if uptrend and strongTrend
+    if close[1] > emaFast[1] and close <= emaFast * (1 + pullbackThreshold/100)
+        inUptrendPullback := true
+else
+    inUptrendPullback := false
+
+// Downtrend pullback: price was below EMA, now touching
+if downtrend and strongTrend
+    if close[1] < emaFast[1] and close >= emaFast * (1 - pullbackThreshold/100)
+        inDowntrendPullback := true
+else
+    inDowntrendPullback := false
+
+// Track trades per day
+newDay = ta.change(time("D")) != 0
+var int tradesToday = 0
+if newDay
+    tradesToday := 0
+
+// ==================== SIGNALS ====================
+inSession = not na(time(timeframe.period, tradingSession))
+canTrade = inSession and tradesToday < maxTradesPerDay and strategy.position_size == 0
+
+// Long: Uptrend + pullback to EMA + bounce
+longCondition = canTrade and uptrend and strongTrend and
+                close > emaFast and close[1] <= emaFast[1] and
+                close > close[1]
+
+// Short: Downtrend + pullback to EMA + rejection
+shortCondition = canTrade and downtrend and strongTrend and
+                 close < emaFast and close[1] >= emaFast[1] and
+                 close < close[1]
+
+// ==================== EXECUTION ====================
+if longCondition
+    stopLoss = close * (1 - stopLossPct / 100)
+    takeProfit = close * (1 + takeProfitPct / 100)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=stopLoss, limit=takeProfit)
+    tradesToday += 1
+    inUptrendPullback := false
+
+if shortCondition
+    stopLoss = close * (1 + stopLossPct / 100)
+    takeProfit = close * (1 - takeProfitPct / 100)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=stopLoss, limit=takeProfit)
+    tradesToday += 1
+    inDowntrendPullback := false
+
+// Close at end of session
+if hour == 15 and minute >= 15 and strategy.position_size != 0
+    strategy.close_all("EOD")
+
+// ==================== PLOTTING ====================
+// EMAs
+plot(emaFast, "Fast EMA", color=color.blue, linewidth=2)
+plot(emaSlow, "Slow EMA", color=color.orange, linewidth=2)
+plot(emaTrend, "Trend EMA", color=color.purple, linewidth=1)
+
+// Trend Background
+bgcolor(uptrend and strongTrend ? color.new(color.green, 95) : na)
+bgcolor(downtrend and strongTrend ? color.new(color.red, 95) : na)
+
+// Signal markers
+plotshape(longCondition, "Long Signal", shape.triangleup, location.belowbar, color.green, size=size.normal)
+plotshape(shortCondition, "Short Signal", shape.triangledown, location.abovebar, color.red, size=size.normal)
+
+// Pullback zones (when looking for entry)
+plotshape(inUptrendPullback and canTrade, "Looking for Long", shape.circle, location.belowbar, color.new(color.green, 50), size=size.tiny)
+plotshape(inDowntrendPullback and canTrade, "Looking for Short", shape.circle, location.abovebar, color.new(color.red, 50), size=size.tiny)
+
+// ==================== INFO TABLE ====================
+var table infoTable = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80))
+
+if barstate.islast
+    table.cell(infoTable, 0, 0, "Trend", text_color=color.white)
+    trendText = uptrend ? "UPTREND" : downtrend ? "DOWNTREND" : "NEUTRAL"
+    trendColor = uptrend ? color.green : downtrend ? color.red : color.gray
+    table.cell(infoTable, 1, 0, trendText, text_color=trendColor)
+
+    table.cell(infoTable, 0, 1, "Strength", text_color=color.white)
+    table.cell(infoTable, 1, 1, str.tostring(math.round(emaSeparation, 2)) + "%", text_color=strongTrend ? color.green : color.red)
+
+    table.cell(infoTable, 0, 2, "Distance", text_color=color.white)
+    table.cell(infoTable, 1, 2, str.tostring(math.round(distanceFromEMA, 2)) + "%", text_color=color.white)
+
+    table.cell(infoTable, 0, 3, "Trades", text_color=color.white)
+    table.cell(infoTable, 1, 3, str.tostring(tradesToday) + "/" + str.tostring(maxTradesPerDay), text_color=color.yellow)
+
+    table.cell(infoTable, 0, 4, "Status", text_color=color.white)
+    statusText = inUptrendPullback ? "LONG SETUP" : inDowntrendPullback ? "SHORT SETUP" : "WAITING"
+    statusColor = inUptrendPullback ? color.green : inDowntrendPullback ? color.red : color.gray
+    table.cell(infoTable, 1, 4, statusText, text_color=statusColor)
+
+// ==================== ALERTS ====================
+alertcondition(longCondition, "Long Signal", "EMA Pullback: LONG entry - Uptrend pullback bounce")
+alertcondition(shortCondition, "Short Signal", "EMA Pullback: SHORT entry - Downtrend pullback rejection")
+alertcondition(uptrend and strongTrend and not uptrend[1], "Uptrend Started", "EMA Pullback: Strong uptrend detected")
+alertcondition(downtrend and strongTrend and not downtrend[1], "Downtrend Started", "EMA Pullback: Strong downtrend detected")

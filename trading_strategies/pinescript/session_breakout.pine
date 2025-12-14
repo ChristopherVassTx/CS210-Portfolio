@@ -1,0 +1,122 @@
+// Session Range Breakout Strategy for TradingView
+// Optimized for prop firm consistency
+//
+// HOW TO USE:
+// 1. Copy this code into TradingView Pine Editor
+// 2. Add to your chart
+// 3. Configure alerts for entry signals
+// 4. Connect alerts to your broker via webhooks
+
+//@version=5
+strategy("Session Range Breakout [Prop Firm]",
+     overlay=true,
+     initial_capital=100000,
+     default_qty_type=strategy.percent_of_equity,
+     default_qty_value=1,
+     commission_type=strategy.commission.cash_per_contract,
+     commission_value=2.5)
+
+// ==================== INPUTS ====================
+// Range Settings
+rangeMinutes = input.int(30, "Range Period (minutes)", minval=15, maxval=120)
+breakoutBuffer = input.float(0.02, "Breakout Buffer %", minval=0.0, maxval=0.5, step=0.01)
+minRangePct = input.float(0.1, "Min Range %", minval=0.05, maxval=0.5)
+maxRangePct = input.float(0.5, "Max Range %", minval=0.2, maxval=2.0)
+
+// Risk Management
+stopLossPct = input.float(0.3, "Stop Loss %", minval=0.1, maxval=2.0, step=0.1)
+takeProfitPct = input.float(0.6, "Take Profit %", minval=0.1, maxval=3.0, step=0.1)
+maxTradesPerDay = input.int(2, "Max Trades Per Day", minval=1, maxval=5)
+
+// Session Settings
+sessionStart = input.session("0930-1000", "Range Session")
+tradingSession = input.session("1000-1500", "Trading Session")
+
+// ==================== CALCULATIONS ====================
+// Detect new day
+newDay = ta.change(time("D")) != 0
+
+// Track range high/low
+var float rangeHigh = na
+var float rangeLow = na
+var bool rangeEstablished = false
+var int tradesToday = 0
+
+// Reset on new day
+if newDay
+    rangeHigh := na
+    rangeLow := na
+    rangeEstablished := false
+    tradesToday := 0
+
+// Build range during range session
+inRangeSession = not na(time(timeframe.period, sessionStart))
+
+if inRangeSession
+    if na(rangeHigh)
+        rangeHigh := high
+        rangeLow := low
+    else
+        rangeHigh := math.max(rangeHigh, high)
+        rangeLow := math.min(rangeLow, low)
+    rangeEstablished := false
+
+// Mark range as established when range session ends
+if not inRangeSession and not na(rangeHigh) and not rangeEstablished
+    rangeEstablished := true
+
+// Calculate range metrics
+rangeSize = rangeHigh - rangeLow
+rangePct = rangeSize / rangeLow * 100
+rangeValid = rangePct >= minRangePct and rangePct <= maxRangePct
+
+// Breakout levels
+buffer = rangeLow * (breakoutBuffer / 100)
+breakoutHighLevel = rangeHigh + buffer
+breakoutLowLevel = rangeLow - buffer
+
+// ==================== SIGNALS ====================
+inTradingSession = not na(time(timeframe.period, tradingSession))
+canTrade = inTradingSession and rangeEstablished and rangeValid and tradesToday < maxTradesPerDay
+
+// Long breakout
+longCondition = canTrade and close > breakoutHighLevel and strategy.position_size == 0
+
+// Short breakout
+shortCondition = canTrade and close < breakoutLowLevel and strategy.position_size == 0
+
+// ==================== EXECUTION ====================
+if longCondition
+    stopLoss = close * (1 - stopLossPct / 100)
+    takeProfit = close * (1 + takeProfitPct / 100)
+    strategy.entry("Long", strategy.long)
+    strategy.exit("Long Exit", "Long", stop=stopLoss, limit=takeProfit)
+    tradesToday += 1
+
+if shortCondition
+    stopLoss = close * (1 + stopLossPct / 100)
+    takeProfit = close * (1 - takeProfitPct / 100)
+    strategy.entry("Short", strategy.short)
+    strategy.exit("Short Exit", "Short", stop=stopLoss, limit=takeProfit)
+    tradesToday += 1
+
+// Close at end of day
+if hour == 15 and minute >= 30 and strategy.position_size != 0
+    strategy.close_all("EOD")
+
+// ==================== PLOTTING ====================
+// Range levels
+plot(rangeEstablished ? rangeHigh : na, "Range High", color=color.green, linewidth=2, style=plot.style_linebr)
+plot(rangeEstablished ? rangeLow : na, "Range Low", color=color.red, linewidth=2, style=plot.style_linebr)
+
+// Breakout levels
+plot(rangeEstablished and canTrade ? breakoutHighLevel : na, "Breakout High", color=color.lime, linewidth=1, style=plot.style_linebr)
+plot(rangeEstablished and canTrade ? breakoutLowLevel : na, "Breakout Low", color=color.maroon, linewidth=1, style=plot.style_linebr)
+
+// Background for range session
+bgcolor(inRangeSession ? color.new(color.yellow, 90) : na)
+bgcolor(inTradingSession and rangeValid ? color.new(color.green, 95) : na)
+
+// ==================== ALERTS ====================
+alertcondition(longCondition, "Long Breakout", "Session Range Breakout: LONG entry signal")
+alertcondition(shortCondition, "Short Breakout", "Session Range Breakout: SHORT entry signal")
