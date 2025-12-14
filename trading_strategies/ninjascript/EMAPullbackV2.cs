@@ -38,8 +38,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private ADX adx;
         private int tradesToday = 0;
         private DateTime lastTradeDate = DateTime.MinValue;
-        private int barsInPullback = 0;
-        private double pullbackExtreme = 0;
+        private int lastTradeBar = 0;
         #endregion
 
         protected override void OnStateChange()
@@ -74,15 +73,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ADXPeriod = 14;
                 ADXThreshold = 25;          // Only trade when ADX > 25 (confirms real trend)
 
-                // RELAXED pullback settings
-                PullbackBars = 5;           // Look for pullback within last 5 bars
-                PullbackToEMAPercent = 0.3; // Price within 0.3% of slow EMA counts as pullback
+                // Pullback settings
+                PullbackToEMAPercent = 0.15; // Price within 0.15% of slow EMA counts as touching
 
                 // Risk Management - adjusted for MNQ
                 Contracts = 1;              // Number of contracts to trade
                 StopLossTicks = 40;         // ~10 points on MNQ
                 TakeProfitTicks = 60;       // ~15 points on MNQ
                 MaxTradesPerDay = 5;        // Allow more trades on trend days
+                CooldownBars = 6;           // Wait 6 bars (30 min on 5-min chart) after each trade
 
                 // Session settings (Eastern Time)
                 TradeLondon = true;
@@ -127,7 +126,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 tradesToday = 0;
                 lastTradeDate = Time[0].Date;
-                barsInPullback = 0;
+                lastTradeBar = 0;
             }
 
             // Check if we're in a valid trading session
@@ -146,22 +145,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (adx[0] < ADXThreshold)
                 return;
 
-            // Calculate how close price is to the slow EMA (our pullback target)
-            double distanceToSlowEMA = Math.Abs(Close[0] - emaSlow[0]) / emaSlow[0] * 100;
-            bool nearSlowEMA = distanceToSlowEMA <= PullbackToEMAPercent;
-
-            // Check if price pulled back to EMA zone recently
-            bool hadPullbackRecently = false;
-            for (int i = 0; i < PullbackBars; i++)
-            {
-                double distAtBar = Math.Abs(Close[i] - emaSlow[i]) / emaSlow[i] * 100;
-                if (distAtBar <= PullbackToEMAPercent)
-                {
-                    hadPullbackRecently = true;
-                    break;
-                }
-            }
-
             // Skip if max trades hit or already in position
             if (tradesToday >= MaxTradesPerDay)
                 return;
@@ -170,58 +153,60 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             // ===================
+            // COOLDOWN CHECK - Don't re-enter too quickly after a trade
+            // ===================
+            if (CurrentBar - lastTradeBar < CooldownBars)
+                return;
+
+            // ===================
             // ENTRY LOGIC - SHORTS (Downtrend)
+            // Price must be BELOW slow EMA, pull UP to touch it, then reject
             // ===================
             if (strongDowntrend)
             {
-                // Method 1: Price pulled back to slow EMA and is now rejecting (current bar red)
-                bool rejection = nearSlowEMA && Close[0] < Open[0];
+                // Price must close BELOW the slow EMA (we're in a downtrend, price should be under)
+                bool priceBelowSlowEMA = Close[0] < emaSlow[0];
 
-                // Method 2: Price recently touched slow EMA and is now continuing down
-                bool continuation = hadPullbackRecently &&
-                                   Close[0] < Close[1] &&
-                                   Close[0] < emaFast[0];
+                // The HIGH of current or recent bar touched/exceeded the slow EMA (the pullback UP)
+                bool pulledUpToEMA = High[0] >= emaSlow[0] * (1 - PullbackToEMAPercent / 100) ||
+                                     High[1] >= emaSlow[1] * (1 - PullbackToEMAPercent / 100);
 
-                // Method 3: Price crossed above slow EMA and failed (bear trap)
-                bool failedBreakout = High[0] > emaSlow[0] &&
-                                     Close[0] < emaSlow[0] &&
-                                     Close[0] < Open[0];
+                // Current bar is rejecting (red candle, closing near lows)
+                bool rejecting = Close[0] < Open[0] && Close[0] < (High[0] + Low[0]) / 2;
 
-                if (rejection || continuation || failedBreakout)
+                if (priceBelowSlowEMA && pulledUpToEMA && rejecting)
                 {
                     EnterShort(Contracts, "PBShort");
                     tradesToday++;
+                    lastTradeBar = CurrentBar;
 
-                    string reason = rejection ? "EMA Rejection" : (continuation ? "Continuation" : "Failed Breakout");
-                    Print($"{Time[0]} | SHORT @ {Close[0]:F2} | Reason: {reason} | Trade #{tradesToday}");
+                    Print($"{Time[0]} | SHORT @ {Close[0]:F2} | Pullback rejection | Trade #{tradesToday}");
                 }
             }
 
             // ===================
             // ENTRY LOGIC - LONGS (Uptrend)
+            // Price must be ABOVE slow EMA, pull DOWN to touch it, then bounce
             // ===================
             if (strongUptrend)
             {
-                // Method 1: Price pulled back to slow EMA and is now bouncing (current bar green)
-                bool bounce = nearSlowEMA && Close[0] > Open[0];
+                // Price must close ABOVE the slow EMA (we're in an uptrend, price should be over)
+                bool priceAboveSlowEMA = Close[0] > emaSlow[0];
 
-                // Method 2: Price recently touched slow EMA and is now continuing up
-                bool continuation = hadPullbackRecently &&
-                                   Close[0] > Close[1] &&
-                                   Close[0] > emaFast[0];
+                // The LOW of current or recent bar touched/dipped to the slow EMA (the pullback DOWN)
+                bool pulledDownToEMA = Low[0] <= emaSlow[0] * (1 + PullbackToEMAPercent / 100) ||
+                                       Low[1] <= emaSlow[1] * (1 + PullbackToEMAPercent / 100);
 
-                // Method 3: Price dipped below slow EMA and recovered (bull trap)
-                bool failedBreakdown = Low[0] < emaSlow[0] &&
-                                      Close[0] > emaSlow[0] &&
-                                      Close[0] > Open[0];
+                // Current bar is bouncing (green candle, closing near highs)
+                bool bouncing = Close[0] > Open[0] && Close[0] > (High[0] + Low[0]) / 2;
 
-                if (bounce || continuation || failedBreakdown)
+                if (priceAboveSlowEMA && pulledDownToEMA && bouncing)
                 {
                     EnterLong(Contracts, "PBLong");
                     tradesToday++;
+                    lastTradeBar = CurrentBar;
 
-                    string reason = bounce ? "EMA Bounce" : (continuation ? "Continuation" : "Failed Breakdown");
-                    Print($"{Time[0]} | LONG @ {Close[0]:F2} | Reason: {reason} | Trade #{tradesToday}");
+                    Print($"{Time[0]} | LONG @ {Close[0]:F2} | Pullback bounce | Trade #{tradesToday}");
                 }
             }
         }
@@ -270,13 +255,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int ADXThreshold { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 10)]
-        [Display(Name = "Pullback Lookback Bars", Order = 1, GroupName = "2. Pullback Detection")]
-        public int PullbackBars { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.1, 1.0)]
-        [Display(Name = "Pullback to EMA %", Description = "How close price must get to slow EMA", Order = 2, GroupName = "2. Pullback Detection")]
+        [Range(0.05, 0.5)]
+        [Display(Name = "Pullback to EMA %", Description = "How close price wick must get to slow EMA to count as touch", Order = 1, GroupName = "2. Pullback Detection")]
         public double PullbackToEMAPercent { get; set; }
 
         [NinjaScriptProperty]
@@ -298,6 +278,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 10)]
         [Display(Name = "Max Trades Per Day", Order = 3, GroupName = "3. Risk Management")]
         public int MaxTradesPerDay { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 20)]
+        [Display(Name = "Cooldown Bars", Description = "Bars to wait after each trade before next entry", Order = 4, GroupName = "3. Risk Management")]
+        public int CooldownBars { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Trade London Session", Order = 1, GroupName = "4. Sessions")]
