@@ -25,9 +25,10 @@ using NinjaTrader.NinjaScript.DrawingTools;
 namespace NinjaTrader.NinjaScript.Strategies
 {
     /// <summary>
-    /// EMA Pullback Strategy V2 - FIXED VERSION
-    /// More aggressive entry detection for trending days.
-    /// Will catch multiple entries on strong trend days like 500pt moves.
+    /// EMA Pullback Strategy V2 - With Drawdown Protection
+    /// - 4PM Hard Kill Switch
+    /// - Daily Loss Limit
+    /// - Proper pullback entries only
     /// </summary>
     public class EMAPullbackV2 : Strategy
     {
@@ -39,13 +40,16 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int tradesToday = 0;
         private DateTime lastTradeDate = DateTime.MinValue;
         private int lastTradeBar = 0;
+        private double dailyPnL = 0;
+        private bool dailyLossLimitHit = false;
+        private bool hardKillHit = false;
         #endregion
 
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
-                Description = @"EMA Pullback V2 - Fixed for real trading. Catches multiple entries on trend days.";
+                Description = @"EMA Pullback V2 - With Drawdown Protection. 4PM kill switch + daily loss limit.";
                 Name = "EMAPullbackV2";
                 Calculate = Calculate.OnBarClose;
                 EntriesPerDirection = 1;
@@ -71,17 +75,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Trend Filter - ADX
                 ADXPeriod = 14;
-                ADXThreshold = 25;          // Only trade when ADX > 25 (confirms real trend)
+                ADXThreshold = 25;
 
                 // Pullback settings
-                PullbackToEMAPercent = 0.15; // Price within 0.15% of slow EMA counts as touching
+                PullbackToEMAPercent = 0.15;
 
-                // Risk Management - adjusted for MNQ
-                Contracts = 1;              // Number of contracts to trade
-                StopLossTicks = 40;         // ~10 points on MNQ
-                TakeProfitTicks = 60;       // ~15 points on MNQ
-                MaxTradesPerDay = 5;        // Allow more trades on trend days
-                CooldownBars = 6;           // Wait 6 bars (30 min on 5-min chart) after each trade
+                // Risk Management - TIGHTENED
+                Contracts = 1;
+                StopLossTicks = 40;
+                TakeProfitTicks = 60;
+                MaxTradesPerDay = 2;        // REDUCED from 5 to 2
+                CooldownBars = 6;
+
+                // DRAWDOWN PROTECTION
+                DailyLossLimit = 500;       // Stop trading after $500 daily loss
+                HardKillHour = 16;          // 4 PM ET
+                HardKillMinute = 0;
 
                 // Session settings (Eastern Time)
                 TradeLondon = true;
@@ -121,12 +130,54 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (CurrentBar < BarsRequiredToTrade)
                 return;
 
+            // ===================
+            // 4PM HARD KILL SWITCH - Flatten everything and stop
+            // ===================
+            if (Time[0].Hour >= HardKillHour && Time[0].Minute >= HardKillMinute)
+            {
+                if (!hardKillHit && Position.MarketPosition != MarketPosition.Flat)
+                {
+                    if (Position.MarketPosition == MarketPosition.Long)
+                        ExitLong("4PM Kill");
+                    else if (Position.MarketPosition == MarketPosition.Short)
+                        ExitShort("4PM Kill");
+
+                    Print($"{Time[0]} | 4PM HARD KILL - Flattening all positions");
+                }
+                hardKillHit = true;
+                return; // No more trading today
+            }
+
             // Reset on new day
             if (Time[0].Date != lastTradeDate.Date)
             {
                 tradesToday = 0;
                 lastTradeDate = Time[0].Date;
                 lastTradeBar = 0;
+                dailyPnL = 0;
+                dailyLossLimitHit = false;
+                hardKillHit = false;
+            }
+
+            // ===================
+            // DAILY LOSS LIMIT CHECK
+            // ===================
+            if (dailyLossLimitHit)
+            {
+                // Still need to manage open position
+                if (Position.MarketPosition != MarketPosition.Flat)
+                    return; // Let stop/target manage exit
+                return; // No new trades
+            }
+
+            if (dailyPnL <= -DailyLossLimit)
+            {
+                if (!dailyLossLimitHit)
+                {
+                    Print($"{Time[0]} | DAILY LOSS LIMIT HIT - P&L: ${dailyPnL:F2} - No more trading today");
+                    dailyLossLimitHit = true;
+                }
+                return;
             }
 
             // Check if we're in a valid trading session
@@ -153,25 +204,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
 
             // ===================
-            // COOLDOWN CHECK - Don't re-enter too quickly after a trade
+            // COOLDOWN CHECK
             // ===================
             if (CurrentBar - lastTradeBar < CooldownBars)
                 return;
 
             // ===================
             // ENTRY LOGIC - SHORTS (Downtrend)
-            // Price must be BELOW slow EMA, pull UP to touch it, then reject
             // ===================
             if (strongDowntrend)
             {
-                // Price must close BELOW the slow EMA (we're in a downtrend, price should be under)
                 bool priceBelowSlowEMA = Close[0] < emaSlow[0];
-
-                // The HIGH of current or recent bar touched/exceeded the slow EMA (the pullback UP)
                 bool pulledUpToEMA = High[0] >= emaSlow[0] * (1 - PullbackToEMAPercent / 100) ||
                                      High[1] >= emaSlow[1] * (1 - PullbackToEMAPercent / 100);
-
-                // Current bar is rejecting (red candle, closing near lows)
                 bool rejecting = Close[0] < Open[0] && Close[0] < (High[0] + Low[0]) / 2;
 
                 if (priceBelowSlowEMA && pulledUpToEMA && rejecting)
@@ -179,25 +224,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                     EnterShort(Contracts, "PBShort");
                     tradesToday++;
                     lastTradeBar = CurrentBar;
-
-                    Print($"{Time[0]} | SHORT @ {Close[0]:F2} | Pullback rejection | Trade #{tradesToday}");
+                    Print($"{Time[0]} | SHORT @ {Close[0]:F2} | Trade #{tradesToday} | Daily P&L: ${dailyPnL:F2}");
                 }
             }
 
             // ===================
             // ENTRY LOGIC - LONGS (Uptrend)
-            // Price must be ABOVE slow EMA, pull DOWN to touch it, then bounce
             // ===================
             if (strongUptrend)
             {
-                // Price must close ABOVE the slow EMA (we're in an uptrend, price should be over)
                 bool priceAboveSlowEMA = Close[0] > emaSlow[0];
-
-                // The LOW of current or recent bar touched/dipped to the slow EMA (the pullback DOWN)
                 bool pulledDownToEMA = Low[0] <= emaSlow[0] * (1 + PullbackToEMAPercent / 100) ||
                                        Low[1] <= emaSlow[1] * (1 + PullbackToEMAPercent / 100);
-
-                // Current bar is bouncing (green candle, closing near highs)
                 bool bouncing = Close[0] > Open[0] && Close[0] > (High[0] + Low[0]) / 2;
 
                 if (priceAboveSlowEMA && pulledDownToEMA && bouncing)
@@ -205,8 +243,29 @@ namespace NinjaTrader.NinjaScript.Strategies
                     EnterLong(Contracts, "PBLong");
                     tradesToday++;
                     lastTradeBar = CurrentBar;
+                    Print($"{Time[0]} | LONG @ {Close[0]:F2} | Trade #{tradesToday} | Daily P&L: ${dailyPnL:F2}");
+                }
+            }
+        }
 
-                    Print($"{Time[0]} | LONG @ {Close[0]:F2} | Pullback bounce | Trade #{tradesToday}");
+        protected override void OnExecutionUpdate(Execution execution, string executionId, double price, int quantity, MarketPosition marketPosition, string orderId, DateTime time)
+        {
+            // Track daily P&L from closed trades
+            if (Position.MarketPosition == MarketPosition.Flat && SystemPerformance.AllTrades.Count > 0)
+            {
+                Trade lastTrade = SystemPerformance.AllTrades[SystemPerformance.AllTrades.Count - 1];
+                if (lastTrade.Exit.Time.Date == Time[0].Date)
+                {
+                    // Recalculate daily P&L
+                    dailyPnL = 0;
+                    foreach (Trade trade in SystemPerformance.AllTrades)
+                    {
+                        if (trade.Exit.Time.Date == Time[0].Date)
+                        {
+                            dailyPnL += trade.ProfitCurrency;
+                        }
+                    }
+                    Print($"{Time[0]} | Trade closed | Daily P&L: ${dailyPnL:F2}");
                 }
             }
         }
@@ -283,6 +342,21 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 20)]
         [Display(Name = "Cooldown Bars", Description = "Bars to wait after each trade before next entry", Order = 4, GroupName = "3. Risk Management")]
         public int CooldownBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(100, 5000)]
+        [Display(Name = "Daily Loss Limit ($)", Description = "Stop trading after this daily loss", Order = 5, GroupName = "3. Risk Management")]
+        public double DailyLossLimit { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 23)]
+        [Display(Name = "Hard Kill Hour (ET)", Description = "Hour to flatten and stop (e.g., 16 = 4PM)", Order = 6, GroupName = "3. Risk Management")]
+        public int HardKillHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 59)]
+        [Display(Name = "Hard Kill Minute (ET)", Order = 7, GroupName = "3. Risk Management")]
+        public int HardKillMinute { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Trade London Session", Order = 1, GroupName = "4. Sessions")]
