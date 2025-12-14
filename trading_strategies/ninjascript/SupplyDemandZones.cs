@@ -75,19 +75,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 IsInstantiatedOnEachOptimizationIteration = true;
 
                 // Zone Detection Settings
-                ImpulseATRMultiple = 1.5;       // Move must be 1.5x ATR to qualify as impulse
+                ImpulseATRMultiple = 1.2;       // Move must be 1.2x ATR to qualify as impulse (lowered for more zones)
                 ATRPeriod = 14;
                 PivotLookback = 5;              // Bars to look back for pivot highs/lows
-                ZoneBuffer = 2;                 // Ticks buffer around zone
+                ZoneBuffer = 4;                 // Ticks buffer around zone (increased)
+                ConsolidationBodyRatio = 0.5;   // Body must be < 50% of range to be consolidation
 
                 // Entry Settings
                 MaxTouchesAllowed = 2;          // Only trade 1st or 2nd touch
-                RequirePivotConfluence = true;  // Require pivot point near zone
+                RequirePivotConfluence = false; // Disabled - was filtering too many setups
 
                 // Risk Management
                 Contracts = 1;
-                RiskRewardRatio = 2.0;          // TP1 at 2R
-                MaxTradesPerDay = 3;
+                RiskRewardRatio = 2.0;          // TP at 2R
+                MaxTradesPerDay = 5;            // Increased for more opportunities
                 DailyLossLimit = 500;
 
                 // Session Settings
@@ -207,32 +208,106 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             double impulseThreshold = atr[0] * ImpulseATRMultiple;
 
-            // Check for bullish impulse (creates demand zone from candle before)
+            // Check for bullish impulse (creates demand zone from consolidation candle before)
             double currentMove = Closes[1][0] - Opens[1][0];
             if (currentMove >= impulseThreshold && !demandZoneValid)
             {
-                // The candle BEFORE this impulse becomes our demand zone
-                demandZoneHigh = Highs[1][1];
-                demandZoneLow = Lows[1][1];
-                demandZoneTouches = 0;
-                demandZoneValid = true;
+                // Walk back to find the CONSOLIDATION candle before the impulse
+                int consolidationBar = FindConsolidationCandle(true); // true = looking for demand (before up move)
 
-                Draw.Rectangle(this, "DemandZone" + CurrentBars[1], false, 1, demandZoneLow, -50, demandZoneHigh, Brushes.Green, Brushes.Green, 20);
-                Print($"{Times[1][0]} | DEMAND ZONE created: {demandZoneLow:F2} - {demandZoneHigh:F2}");
+                if (consolidationBar > 0)
+                {
+                    demandZoneHigh = Highs[1][consolidationBar];
+                    demandZoneLow = Lows[1][consolidationBar];
+                    demandZoneTouches = 0;
+                    demandZoneValid = true;
+
+                    Draw.Rectangle(this, "DemandZone" + CurrentBars[1], false, consolidationBar, demandZoneLow, -50, demandZoneHigh, Brushes.Green, Brushes.Green, 20);
+                    Print($"{Times[1][0]} | DEMAND ZONE created: {demandZoneLow:F2} - {demandZoneHigh:F2} (bar -{consolidationBar})");
+                }
             }
 
-            // Check for bearish impulse (creates supply zone from candle before)
+            // Check for bearish impulse (creates supply zone from consolidation candle before)
             if (currentMove <= -impulseThreshold && !supplyZoneValid)
             {
-                // The candle BEFORE this impulse becomes our supply zone
-                supplyZoneHigh = Highs[1][1];
-                supplyZoneLow = Lows[1][1];
-                supplyZoneTouches = 0;
-                supplyZoneValid = true;
+                // Walk back to find the CONSOLIDATION candle before the impulse
+                int consolidationBar = FindConsolidationCandle(false); // false = looking for supply (before down move)
 
-                Draw.Rectangle(this, "SupplyZone" + CurrentBars[1], false, 1, supplyZoneLow, -50, supplyZoneHigh, Brushes.Red, Brushes.Red, 20);
-                Print($"{Times[1][0]} | SUPPLY ZONE created: {supplyZoneLow:F2} - {supplyZoneHigh:F2}");
+                if (consolidationBar > 0)
+                {
+                    supplyZoneHigh = Highs[1][consolidationBar];
+                    supplyZoneLow = Lows[1][consolidationBar];
+                    supplyZoneTouches = 0;
+                    supplyZoneValid = true;
+
+                    Draw.Rectangle(this, "SupplyZone" + CurrentBars[1], false, consolidationBar, supplyZoneLow, -50, supplyZoneHigh, Brushes.Red, Brushes.Red, 20);
+                    Print($"{Times[1][0]} | SUPPLY ZONE created: {supplyZoneLow:F2} - {supplyZoneHigh:F2} (bar -{consolidationBar})");
+                }
             }
+        }
+
+        private int FindConsolidationCandle(bool forDemand)
+        {
+            // Walk back from bar [1] to find a small-bodied consolidation candle
+            // Consolidation = body is small relative to the candle's range
+
+            for (int i = 1; i <= 10; i++) // Look back up to 10 bars
+            {
+                if (i >= CurrentBars[1])
+                    break;
+
+                double body = Math.Abs(Closes[1][i] - Opens[1][i]);
+                double range = Highs[1][i] - Lows[1][i];
+
+                if (range <= 0)
+                    continue;
+
+                double bodyRatio = body / range;
+
+                // Consolidation candle: body is less than 50% of the range (small body, could have wicks)
+                // Also check it's a small candle overall (not a big doji)
+                bool isSmallBody = bodyRatio < ConsolidationBodyRatio;
+                bool isSmallRange = range < atr[0] * 0.75; // Range less than 75% of ATR
+
+                if (isSmallBody && isSmallRange)
+                {
+                    // For demand zones, we want the consolidation at a relative low
+                    // For supply zones, we want the consolidation at a relative high
+                    if (forDemand)
+                    {
+                        // Check this candle is near a local low (lower than next few candles)
+                        bool isNearLow = true;
+                        for (int j = 1; j < i && j <= 3; j++)
+                        {
+                            if (Lows[1][i] > Lows[1][j] + 5 * TickSize)
+                            {
+                                isNearLow = false;
+                                break;
+                            }
+                        }
+                        if (isNearLow)
+                            return i;
+                    }
+                    else
+                    {
+                        // Check this candle is near a local high
+                        bool isNearHigh = true;
+                        for (int j = 1; j < i && j <= 3; j++)
+                        {
+                            if (Highs[1][i] < Highs[1][j] - 5 * TickSize)
+                            {
+                                isNearHigh = false;
+                                break;
+                            }
+                        }
+                        if (isNearHigh)
+                            return i;
+                    }
+                }
+            }
+
+            // Fallback: if no consolidation found, use bar 1
+            return 1;
         }
 
         private void UpdatePivotPoints()
@@ -274,11 +349,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool pivotConfluence = !RequirePivotConfluence ||
                                    (pivotLow > zoneLowWithBuffer && pivotLow < zoneHighWithBuffer + 20 * TickSize);
 
-            // Check for bullish rejection candle
-            bool rejectionCandle = Closes[0][0] > Opens[0][0] &&
-                                   (Closes[0][0] - Lows[0][0]) > (Highs[0][0] - Closes[0][0]) * 1.5;
+            // Check for bullish rejection candle (relaxed - just needs to close green with lower wick)
+            bool rejectionCandle = Closes[0][0] > Opens[0][0] &&  // Green candle
+                                   Lows[0][0] < Opens[0][0];       // Has a lower wick
 
-            if (wickedIntoZone && closedAboveZone && pivotConfluence && rejectionCandle)
+            if (wickedIntoZone && closedAboveZone && rejectionCandle)
             {
                 demandZoneTouches++;
 
@@ -323,11 +398,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool pivotConfluence = !RequirePivotConfluence ||
                                    (pivotHigh < zoneHighWithBuffer && pivotHigh > zoneLowWithBuffer - 20 * TickSize);
 
-            // Check for bearish rejection candle
-            bool rejectionCandle = Closes[0][0] < Opens[0][0] &&
-                                   (Highs[0][0] - Closes[0][0]) > (Closes[0][0] - Lows[0][0]) * 1.5;
+            // Check for bearish rejection candle (relaxed - just needs to close red with upper wick)
+            bool rejectionCandle = Closes[0][0] < Opens[0][0] &&  // Red candle
+                                   Highs[0][0] > Opens[0][0];      // Has an upper wick
 
-            if (wickedIntoZone && closedBelowZone && pivotConfluence && rejectionCandle)
+            if (wickedIntoZone && closedBelowZone && rejectionCandle)
             {
                 supplyZoneTouches++;
 
@@ -432,6 +507,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Range(1, 10)]
         [Display(Name = "Zone Buffer (Ticks)", Order = 4, GroupName = "1. Zone Detection")]
         public int ZoneBuffer { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.2, 0.8)]
+        [Display(Name = "Consolidation Body Ratio", Description = "Max body/range ratio for consolidation candle", Order = 5, GroupName = "1. Zone Detection")]
+        public double ConsolidationBodyRatio { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 3)]
